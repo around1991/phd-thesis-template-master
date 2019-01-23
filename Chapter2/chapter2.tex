@@ -1,0 +1,135 @@
+%!TEX root = ../thesis.tex
+%*******************************************************************************
+%****************************** Second Chapter *********************************
+%*******************************************************************************
+
+\chapter{Background}
+
+\ifpdf
+    \graphicspath{{Chapter2/Figs/Raster/}{Chapter2/Figs/PDF/}{Chapter2/Figs/}}
+\else
+    \graphicspath{{Chapter2/Figs/Vector/}{Chapter2/Figs/}}
+\fi
+
+\section{Neural networks}
+
+\textit{The history of neural networks is convoluted and winding, and it is difficult to give a concise overview of their history. What follows is a synchronic description of how they are used -- a brief historical overview follows in the next section.}
+
+\subsection{A brief practitioner's guide to neural networks for NLP}
+
+Neural networks are nonlinear function approximators of a certain shape: they perform an affine transformation of the input, followed by a non-linear function, to obtain an output. In this view, logistic regression corresponds to the simplest class of neural networks, with the choice of non-linearity being the logistic function. To exclude cases like this, typically one adds the condition that one composes multiple functions of the above form to obtain the input-output function. This creates \textit{hidden layers}: the intermediate states in the chain of non-linear affine transformations.
+
+The simplest example of a neural network is when the affine transformation is a simple matrix multiplication followed by a translation. This is referred to as a \textit{feedforward layer}. An alternative is to convolve the input with a small kernel: a matrix much smaller than the input size. This gives rise to a \textit{convolutional layer}, the building block of a \textit{convolutional neural network}. These have been tremendously successful in image processing and speech recognition recently @@@cite, and have also been applied for 
+
+One notable fact about neural networks is that, with one hidden layer of infinite width, they are able to universally approximate any function \citep{Cybenko:89,Hornik:91} under mild assumptions on the non-linearity. This provides one justification for their use: given enough hidden units, they can learn any input-output mapping in a supervised task.
+
+One recent 
+
+A neural network consists of two parts: an architecture, and a learning algorithm. Typically, the structure of a neural network can be represented by a directed acyclic graph. Nodes without incoming edges are input nodes, which is how information is fed into the neural network. Nodes without outgoing edges are output nodes, which represent the network's computation on the input. Each node, or \textit{neuron}, takes all input values from incoming connections, does some computation on these input values, and stores the result as its output value. Commonly, one multiplies each incoming value by a \textit{weight}, and then sums them up to form an intermediate value. Classically (e.g. the perception), this intermediate result would be compared to a threshold: if the intermediate was greater than the threshold, the neuron would output 1, otherwise the neuron would output 0. If we denote by $\mathbf{x}$ the vector of input values for a neuron, this corresponds to the neuron computing the following function:
+\begin{equation}
+    f(\mathbf{x}) = H(\mathbf{w} \cdot \mathbf{x} + b)
+\end{equation}
+where $H$ denotes the Heaviside step function, $\mathbf{w}$ the vector of weights for the incoming connections, and $b$ the (negative) threshold (also called the \textit{bias}). For optimisation reasons (see later), it is often preferable to have a differentiable non-linearity. Thus, sigmoid, tanh or ReLU non-linearities are often used in contemporary neural networks.
+
+\subsection{Common neural network architectures in NLP}
+
+Different graph structures give rise to different neural network architectures. At present, it is most common to organise the nodes into successive \textit{layers} $l_1, \dots, l_n$ such that neurons in each layer only have incoming connections from nodes in the previous layer and outgoing connections to nodes in the subsequent layer. This also makes it easier to implement neural networks, as the computations for each layer can be calculated as affine transformations, which take advantage of optimized matrix-vector and matrix-matrix multiplication routines.
+
+The most basic instantiation of the above architectures has (possibly many) layers of nodes, with each node in each layer connected to all nodes in the preceding and subsequent layers. This is known as a \textit{fully-connected network}. Another variant which reignited interest in neural network models for vision is called a \textit{convolutional neural network}. Here, a small window of neurons (called a \textit{filter}), with the same incoming weights and biases, are scanned over an input incrementally, based on the intuition that visual features tend to be local and translation-invariant within an image. These networks appear to learn low-level visual features in early layers, such as edges and basic shapes, while higher layers seem to capture more global semantic information. @@@cnns for text: n-gram features (whether over words or characters).
+
+Neural networks can also contain self connections, where the state of a layer is computed based on its state in the previous timestep. This introduces recurrence into the network, and networks with these connections are called \textit{recurrent neural networks} (RNNs). These models are particularly useful for models with sequential structure, such as text, as the hidden state at a particular timestep depends on all previous timesteps, and in effect acts as a kind of memory. The most basic instantiation of RNNs are Elman recurrent networks. Here, the hidden state at time $t$ depends on both the hidden state at the previous timestep and the current input:
+\begin{equation}
+    h_t = f(W h_{h-1} + U x_t + b)
+    \label{eqn:rnn}
+\end{equation}
+where $f$ is a non-linearity. This update rule rewrites the memory of the network at each timestep, and hence makes long-term temporal credit assignment difficult (cf. the vanishing/exploding gradients problem).
+
+Hochreiter and Schmidthuber @@@cite proposed a solution by including another memory state in the recurrence: the \textit{cell state}. This is only written to additively, and this helps prevent the vanishing/exploding gradient problem. Concretely, this changes the RNN update rule (Equation \ref{eqn:rnn}) to the following:
+\begin{align}
+    f_t &= \sigma(W_f h_{t-1} + U_f x_t + b_f) \\
+    i_t &= \sigma(W_t h_{t-1} + U_t x_t + b_i) \\
+    o_t &= \sigma(W_o h_{t-1} + U_o x_t + b_o) \\
+    c_t &= f_t c_{t-1} + i_t \tanh(W_c h_{t-1} + U_c x_t + b_c) \\
+    h_t &= o_t \tanh(c_t)
+\end{align}
+where $\sigma$ is the sigmoid function, and all vector-vector products are to be intepreted pointwise. The intuition is that $c_t$ represents the long-term memory of the network, and reading and writing to this is performed additively. $i_t$ and $f_t$ are the input and forget gates respectively, which guard how much of the previous timestep's cell state is kept and overwritten respectively. $o_t$ is the output gate, which controls how much of the cell state is exposed as the new hidden state. Note that the previous timestep hidden state is only indirectly used to calculate the new hidden state.
+
+Due to the sequential nature of RNN processing, the hidden state at time $t$ can only consider inputs at time less than $t$. However, for some tasks, knowledge of future inputs can be useful, such as disambiguating noun/verb word senses for POS tagging. A simple way to incorporate future context is to process the input in reverse order with another RNN to obtain a sequence of hidden states $h_t^{rev}$, where each $h_t^{rev}$ captures the forward context of the word to the end of the sentence. Then, the forward and reverse hidden states are concatenated to obtain the final hidden state $h_t$ at time $t$. This is known as a bidirectional RNN, and the reverse RNN effectively acts as a powerful lookahead feature extractor @@@cite.
+
+One of the major uses of neural networks in NLP is representation learning, especially for sentences. As neural networks compute using vectors of real numbers, the final hidden state of the neural network after processing an entire sentence can be used as a feature vector to a linear model. This can be either the final hidden state of an RNN or LSTM scanning over the sentence, or the final hidden layer of a stack of convolutions. The neural network acts as an encoder, compressing the variable length input into a fixed-width representation. 
+
+A particularly important application of sentence representation learning is in the sequence-to-sequence framework. In many conditional language generation tasks, such as machine translation, we often need to generate language from structured input data. The sequence-to-sequence approach encodes the input data using a neural network to a vector representation, which is then fed into a neural language model decoder which generates the output text one word at a time. This approach demonstrates the modularity and flexibility of neural networks, as one can use a wide range of network architectures in both the encoder and decoder.
+
+One issue with the above approach is that the same dimension vector is used to represent every sentence, no matter what length the sentence is. For long sentences, therefore, there is information loss in the compression process, and empirically the performance of a simple sequence-to-sequence model on translating long sentences is poor. To bypass this bottleneck, @@@Bahdanau propose the \textit{attention} mechanism, where the encoding of the input is dynamically computed during decoding. In detail, rather than encoding the input as a single vector, an attentional model encodes the input as a sequence of vectors $c_1, \dots, c_n$, called annotations. Then, at timestep $t$ during decoding, the decoder uses its current hidden state, $h_{t-1}$, to query the annotations, and then uses the (normalised) query scores as weights to calculate the context vector for the current timestep. This context vector is then fed into the LSTM recurrence:
+\begin{align}
+    a_i &= \text{sim}(h_{t-1}, c_i) \\
+    w_i &= \frac{a_i}{\sum a_i} \\
+    s_t &= \sum w_i c_i
+    h_t = LSTM(h_{t-1}, x_t, s_t)
+\end{align}
+
+Many choices of similarity function have been proposed. The original paper used a multi-layer perceptron to calculate the similarity score, while @@@luong showed that a bilinear scoring function performed better in machine translation empirically.
+
+\subsection{Feature representation in neural networks}
+
+Neural networks manipulate vectors of real numbers. Therefore, when processing language with neural networks, one fundamental consideration is how to represent the symbolic language input in a format amenable to neural computation. There are issues to do with the granularity of the input (what scale do we discretise the language) and coding (how do we represent the discretised units of language numerically).
+
+For many languages, words appear to be the basic unit of language, and indeed many languages are written word-segmented, such as English. This suggests processing language on the word-level, and using words as input features. This is the standard approach for contemporary NLP. However, for many languages, such as Chinese, words are not segmented when written. This means that an additional tokenisation step has to be run, which may introduce errors into the pipeline. Further, due to the long tail of language, particularly for languages with rich morphology, storing a separate feature for each word results in a prohibitive number of features, and many words will not be seen more than once in the training data\footnote{In the standard training split of the Wall Street Journal corpus, xx\% of words are hapax legomena}. To deal with this, typically we limit the word features to the most frequent $k$ words in the training corpus, or take only words which appear more than $n$ times. Even if we use all words seen in the training data as features, we can expect to find many words in test data which have not been seen in the training data, and representing these unseen words poses a challenge.
+
+One approach is to use a special cover token (typically denoted UNK, for UNKnown word) to represent all unseen words, and train the model using this feature by replacing certain words in the training data with this token. However, this approach completely disregards any information contained in the unseen token. Another approach is to incorporate additional features into our input apart from just word identity. For example, many parsing models @@@ make use of additional capitalisation and part-of-speech features, which are represented by a binary feature and an index into a closed vocabulary respectively. 
+
+To help deal with the word sparsity issue, sub-word level features can also be used. Morphemes, being the minimal unit of meaning, make appealing features, as they contain both semantic information in the lemma and any derivational affixes, as well as syntactic information in inflectional affixes. This helps smooth over the rare-word issue, as many words in the long tail tend to be morphologically related to high frequency words. However, breaking down words into morphemes is a tricky process: hand-written morphological analysers are brittle and require lots of engineering effort, while (minimally) supervised approaches are still fairly error-prone. The most extreme approach is to use the raw characters of the word as input features. This bypasses the issue of having to provide a morphological analysis, but requires a powerful model to capture the (largely arbitrary) form-meaning mapping. Some models elect to use a combination of features, and indeed including character level features and a powerful character composition model (such as an RNN or a CNN) can often increase performance across a wide range of NLP tasks @@@cite.
+
+Whichever features we choose, we must turn them into a numerical representation to feed into a neural network. The typical way of doing this is using \textit{one-hot coding}. This represents features as a sparse vector of dimension the total number of features, with a 1 at the dimension corresponding to the index of the feature and 0's elsewhere. If there are multiple disjoint sets of features, such as word and POS features, they are typically one-hot coded separately, and then the resulting one-hot vectors are concatenated before being fed into the model. This means that the first weight layer of the neural network is effectively a lookup table which associates each feature with a vector called an \textit{embedding}. 
+
+One special class of embeddings are the representations a neural network learns for word features. These are called \textit{word embeddings}, and they can be initialised randomly and trained with the rest of the network. However, many datasets are small, and so words which appear few times in the training corpus may have their parameters badly estimated during the training procedure. An alternative is to pretrain word embeddings on an unsupervised task using copious amounts of unlabelled data and use these to initialise the model word embedding parameters. This simple technique can be viewed as a cheap way of doing semi-supervised learning, and has been shown to improve performance at a wide range of NLP tasks (@@@cite).
+
+Word embedding pretraining typically involves some form of language modelling objective. The earliest approaches took the word embedding parameters from a neural language model; however, with a large vocabulary, language modelling can be computationally intensive. Consequently, a plethora of methods for efficient neural langauge model training have been published (@@@cite hierarchical softmax, importance sampling, NCE). @@@Mikolov introduced a new unsupervised paradigm: instead of predicting the next word given the context, decide whether two words appear in the same context or not. This avoids computing the softamx entirely, and resulted in orders of magnitude speedups for word embedding estimation.
+
+An alternative approach is to derive word embeddings directly from word cooccurrence counts. Latent semantic analysis performs an SVD factorisation of a word-word cooccurrence matrix, and uses the resulting low-dimensional vectors as word representations. Another popular word embedding model, GLoVE @@@cite, also can be viewed as an enhanced matrix factorisation model which factorises the log-probability of word coccurence rather than the raw cooccurence count. 
+
+One interesting phenomenon of all of these models is that geometric similarity of words in the embedding space seems to reflect the underlying conceptual similarity of those words. This is perhaps explained by the \textit{distributional hypothesis}, which states that words which occur in similar contexts tend to have similar meanings. Indeed, the embedding space can be viewed as a form of \textit{conceptual space} @@do more here.
+
+\subsection{Training neural networks}
+
+The second component of a neural network is the learning algorithm. This specifies how the neural network should adapt to the training data in order to minimise some error criterion. While many different learning rules have been proposed in the literature, the \textit{de facto} standard currently is gradient descent on the parameters (i.e. the weights) of the neural network to minimise some loss function. Common loss functions include the cross-entropy between the model prediction and the true label, or margin-based losses between the model prediction and the ground truth.
+
+A naive approach towards calculating the gradients of the loss function with respect to the model parameters is quadratic in the number of layers, as we would have to effectively traverse the computational graph for each layer. However, if we memoise the intermediate steps, we can calculate all of the derivatives in one backwards pass through the network. This is the basic idea behind the backpropagation algorithm, which in practice is how derivatives are computed for neural networks. 
+
+Once gradients are calculated, the parameters have to be updated. One common way of doing this is to use (minibatched) stochastic gradient descent (SGD): for a parameter $\theta$, with gradient $\nabla\theta$, the update is
+\begin{equation}
+    \theta \leftarrow \theta + \alpha \nabla \theta
+    \label{eqn:sgd}
+\end{equation}
+where $\alpha$ is the \textit{step size}, which is a hyperparameter of the SGD algorithm. Minibatch here refers to the fact that typically, purely online SGD (calculating gradients based on one training set example at a time) suffers too much from variance in the gradient, while fully batched SGD is too memory-intensive. Thus, the gradient estimate $\nabla\theta$ in Equation \ref{eqn:sgd} is calculated using a small batch of data points\footnote{in the order of 32-100 examples} sampled from the training data.
+
+Pure SGD can have problems converging in certain pathological conditions, such as very flat minima. A commonly used variant introduces a momentum term to accelerate convergence, which simulates the behaviour of a heavy ball under gravity. This changes the update rule to:
+\begin{align}
+    z &\leftarrow \beta z + \nabla \theta \\
+    \theta &\leftarrow \theta + \alpha z
+\end{align}
+where now we introduce another hyperparameter $\beta$, which controls how strongly we remember previous gradients. In practice, momentum appears to speed up the convergence of gradient descent, and makes SGD more resilient to choices of the step size hyperparamater.
+
+Typical convergence proofs of SGD require the step size hyperparameter to go to zero over the course of optimisation. There are many ways of scheduling the learning rate, such as epoch-based, or by monitoring performance on a held-out development set; these all add to the number of hyperparameters which need to be tuned. Adaptive learning rate algorithms (@@@cite adagrad, adadelta, adam) attempt to automatically schedule the learning rate using convergence information. They also claim to be more resilient to hyperparameter choices. Although well-tuned SGD with momentum typically performs better than using an adaptive optimizer with off-the-shelf hyperparameter settings, the latter perform well enough to justify the convenience.
+
+As neural networks are low-bias function approximators, they overfit very easily. Regularisation is therefore crucial to good model performance. There are many common regularisation techniques for neural networks: one common one is $\ell_2$-regularisation, which penalises weights with high $\ell_2$ norm. The most widely used technique is dropout @@@cite. Here, a proportion of the output values in each layer are randomly zeroed out. This was originally presented to be an empirically effective technique, but the theoretical motivation was lacking. @@@gal derived connections between dropout and variational inference, and showed how dropout can also give uncertainty estimates out-of-the-box, and also how to apply dropout to self-connections in neural networks. @@@gabor showed that, when properly regularised, LSTM models outperform more complicated architectures at language modelling, which highlights the power of dropout.
+
+\section{Generative models}
+
+In machine learning, generative modelling is the name given to a class of approaches which try to learn the distribution of the data. For a classification task, this involves learning the joint distribution of inputs $X$ and the labels $Y$; stretching the definition, generative modelling can also mean capturing the distribution of given data $X$ in unsupervised learning with a view towards drawing samples from the learnt model which resemble actual data points. One of the most common ways of specifying a generative model is as a graphical model, where nodes represent random variables and edges represent dependence relations.
+
+Another application of generative models in NLP is parsing. PCFG-based parsers
+
+@@@generative parsing models?
+
+\section{Deep generative models}
+
+Deep generative models are a class of approaches towards generative modelling which make heavy use of neural networks to parametrise certain components of the model. 
+
+The earliest generative models which use neural networks were Hopfield networks, and their stochastic counterparts Boltzmann machines. These define the energy of a configuration, which corresponds to an unnormalised log-probability. Training a Boltzmann machine corresponds to increasing the probability of the training data. @@@computing normalising constant is hard, have to use gibbs sampling or contrastive divergence
+
+Restricted Boltzmann machines (RMBs) aim to alleviate the difficulty of training general Boltzmann machines by making the node structure bipartite. One set of nodes corresponds to the input data, and the other are the `hidden' or latent layer. This simplifies sampling from the model, as now we can use blocked Gibbs sampling to sample either the input nodes or the latent nodes in one go. As an added bonus, inferring the most likely latent variable configuration for a given input gives us a low-dimensional `representation' of the input.
+
+However, inference in RBMs is still difficult, as calculating the normalising constant requires summing over exponentially many configurations in the number of total nodes. While sampling-based Monte Carlo approaches can be used, it is often difficult to tell whether the samples are of good quality. An alternative approach is to use variational approaches to perform approximate inference. @@@
+
+@@@variational autoencoder, generative adversarial network

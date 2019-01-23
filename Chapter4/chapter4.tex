@@ -1,0 +1,270 @@
+\chapter{A sentence-level extension to LDA}
+\label{chap:sentencelda}
+
+\section{Introduction}
+
+Generative models of text, such as latent Dirichlet allocation \citep{Blei:03}, seem to automatically capture the semantic content of collections of documents \citep{Griffiths:04}. These models typically assume documents are bags of words, with individual words only weakly correlating with one another, if at all. However, word meaning is dependent on context -- \textit{\textbf{support} vector machine} means something very different to \textit{generous \textbf{support}}. Therefore, modelling dependencies between words would allow these models to closer reflect the underlying text.
+
+In this paper, we propose to use sentences, not words, as the basic exchangeable unit of topic models. We present two generative models of language which both generate whole sentences from the latent topics, replacing the topic-word categorical distribution with a more flexible topic-sentence distribution given by a recurrent neural network language model. We aim to capture intra-sentential dependencies such as syntax and compositional semantics using the RNN, and sentence-level semantics in the latent topics. Our models can be viewed as integrating language modelling into topic models.
+
+One model, \textsc{sentVAE}, is a discrete hidden variable generative model of sentences. Here, for each sentence $s_i$ in a document $\mathcal{D}$, the model independently draws a topic $z$ from a uniform prior, and then draws a sentence from $z$. The other, \textsc{sentLDA}, is a direct generalisation of LDA. For each document, the model first draws a document-topic distribution $\theta$ from some prior. Then, for each sentence in the document, the model draws a topic $z$ from $\theta$, and then draws a sentence from $z$.
+
+Traditional inference methods for generative models with latent variables have typically used iterative methods such as (variational) expectation maximisation or Gibbs sampling. However, calculating the data likelihood repeatedly with a computationally intensive function such as an RNN is prohibitively slow. We thus use neural variational inference \citep{Rezende:14,Mnih:14,Kingma:14} to train our models. This uses a neural network to parametrise an approximation to the  posterior distribution of the latent variables given the data, and then trains the generative model with samples from this approximate posterior. By using of reparametrisation to perform the sampling, gradient information can be backpropagated from the generative model to the inference model, which allows the model to be trained end-to-end. We make heavy use of such reparametrisation gradient estimators, using the recently introduced Gumbel-softmax estimator \citep{Jang:17,Maddison:17} to sample from categorical distributions, and replacing the Dirichlet prior of traditional LDA with a logistic normal prior \citep{Mackay:98,Lafferty:06,Hennig:12,Strivastava:17}.
+
+We show that both our model achieves much lower perplexities than standard topic models and even a strong language model baseline on held-out documents, showing that integrating a more powerful data likelihood function with global topic information helps model documents much more accurately. We also manually inspect the latent topics, and show qualitatively that both models learn syntactically and semantically coherent clusters of sentences, and show some qualitative differences in the clusters learnt by each of our models. Finally, we show that document representations learnt via standard word-level LDA outperform sentence-level topic models at a standard shallow document classification task, and explore the reasons behind this.
+
+\section{Related Work}
+
+Unsupervised discovery of the latent topics of documents has been a long-standing goal in NLP, with early attempts including models such as latent semantic indexing and its probabilistic generalisation \citep{Deerwester:90,Hofmann:99}. However, these models are not true generative models, as they cannot properly assign probabilities to new documents outside the training set. Latent Dirichlet allocation (LDA; \citet{Blei:03}) was developed partly to overcome these issues; \citet{Griffiths:04} showed the utility of topic models for exploring large collections of documents.
+
+Attempts have been previously made to relax the word independence assumptions of the traditional LDA model: \citet{Wallach:06} proposed a model that can also generate word n-grams, while \citet{Gruber:07} tie all the topic assignments for a single sentence together, but still generate each word of a sentence independently of the other words. Another previous attempt to integrate contextual information into topic models is the syntactic topic model of \citet{Boydgraber:09}. 
+
+Recently, \citet{Dieng:17} proposed \textsc{TopicRNN}, another model that integrates RNNs and topic models. However, their generative process is different to ours: it is effectively a mixture model of a traditional topic model and a recurrent neural network language model. In contrast, our model is a much more direct generalisation of LDA to the sentence-level, as it integrates the RNN directly into the generative process.
+
+Variational inference is a common technique for inference in otherwise intractable graphical models; it was proposed as one of the earliest inference methods for LDA \citep{Blei:03}. The idea of using a neural network for the proposal distribution was first proposed in \citet{Dayan:95} in the context of Helmholtz machines. However, this trained the inference and generative portions of the model separately. End-to-end training of the entire ensemble as an autoencoder was introduced by \citet{Kingma:14}, \citet{Mnih:14} and \citet{Rezende:14}. \citet{Miao:16} applied these techniques to the task of document modelling, while \citet{Strivastava:17} used neural variational inference, as well as a diagonal logistic-normal approximation to the Dirichlet distribution, in the context of topic modelling. \citet{Bowman:16} combined neural variational inference with an LSTM as the likelihood function -- our \textsc{sentVAE} is an adaptation of their model with discrete rather than continuous latent variables. This architecture has subsequently been generalised for dialogue generation \citep{Cao:17,Serban:17} and text compression \citep{Miao:16b}.
+
+\section{Model description}
+
+\subsection{Motivation}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.6\columnwidth]{lda_plate}
+    \caption{Plate diagram for (unsmoothed) LDA. Shaded variables are observed.}
+    \label{fig:lda_plate}
+    \vspace{-1em}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\columnwidth]{sentlda_plate}
+    \caption{Plate diagram for \textsc{sentLDA} (left) and \textsc{sentVAE} (right)}
+    \label{fig:sentlda_plate}
+\end{figure}
+
+To motivate \textsc{sentLDA}, consider the classic LDA model, shown in Figure \ref{fig:lda_plate}. The model first draws, for each document, a document-topic distribution $\theta$ from a Dirichlet prior $\alpha$. Then, for each word in the document, the model samples a topic $z$ from $\theta$, and then samples a word $w$ from $P(w | z)$. Coherent semantic topics (i.e. clusters of words) emerge from the tradeoff between assigning as few topics per document as possible, and as few words per topic as possible. Here, the Dirichlet prior has a crucial role in promoting document-topic and topic-word sparsity.
+
+However, the model assumes that words are generated independently once the underlying topics are known. This assumption means the model cannot capture compositional semantics, such as multi-word expressions. In addition, another side effect is that the model very strongly implements the \textit{one-sense-per-discourse} heuristic - multiple occurrences of the same word in a document will all be tagged with the same topic, regardless of the context of the word. Further, this model is completely syntax-blind -- the document is treated as a mere bag-of-words, and word order is completely ignored, in stark contrast to linguistic intuition.
+
+\subsection{The Generative Story}
+
+Motivated by these considerations, \textsc{sentLDA} makes the following change to the generative process of LDA: instead of assuming the topics correspond to distributions over the finite vocabulary of words, we assume topics correspond to a distribution over an infinite set of sentences. Recurrent neural networks are a natural fit to parametrise this distribution -- specifically LSTMs \citep{Hochreiter:97}, for their power and ability to capture long-range dependencies. 
+
+One way to incorporate topic information into the language model is to use one LSTM per topic. However, this would lead to an explosion in the number of parameters of the model. Instead, \textsc{sentLDA} shares the same LSTM for all topics, and passes in the topic information as the initial hidden state of the LSTM. We originally tried passing in the raw one-hot topic encoding as the initial hidden state, but this gave suboptimal results. Inspired by recent work on distributed representations of categorical data, and particularly motivated by the success of word embeddings, we instead look up the one-hot representation of a topic in a \textit{topic embedding} table, and pass this in to the decoder LSTM. This also has the benefit of divorcing the decoder LSTM hidden state size from the number of topics.
+
+Finally, during model training, we would like to use the reparametrisation trick of \citet{Kingma:14} and \citet{Rezende:14} to jointly train the inference and reconstruction networks end-to-end. However, there is no convenient reparametrisation trick for the Dirichlet distribution, so \textsc{sentLDA} replaces the Dirichlet prior over the document-topic distributions by a diagonal logistic normal distribution \citep{Mackay:98,Hennig:12,Strivastava:17}. The logistic normal distribution in $d$-dimensions (hereafter denoted by $\sigma \mathcal{N}$) is parametrised by $\mu \in \mathbb{R}^{d-1}$ and $\Sigma \in \mathbb{R}^{(d-1)^2}$. Samples from this distribution are obtained by sampling from $\mathcal{N}(\mu, \Sigma)$, appending 0, and then taking the softmax of the resulting vector. One advantage of this distribution over the Dirichlet distribution is that it can capture correlations between topics.
+
+The full generative story of \textsc{sentLDA} is shown in Figure \ref{fig:sentlda_plate}, and the log-likelihood of a document $\mathcal{D}$ with sentences $s_1, \dots, s_N$ has the following form (where $\alpha$ are the parameters of the logistic normal prior):
+\vspace{-1em}
+\begin{dmath}
+P(\mathcal{D} | \alpha) = \int P(\theta | \alpha) \times \\ \left ( \prod_{i=1}^N \sum_{z_n} P(z_n | \theta) P(s_i|z_n) \right ) d\theta
+\end{dmath}
+
+In LDA, one motivation to introduce $\theta$ was to combat the weakness of the unigram and mixture-of-unigram models \citep{Nigam:00} of documents, which stems from the deficiencies of a multinomial data likelihood function. The unigram model just learns a single multinomial distribution from observing which words appear the most in the whole corpus (in effect, the entire corpus has a single topic). The mixture-of-unigram learns $N$ multinomials (corresponding to the number of latent topics), and for each document draws a topic, and then draws words from the multinomial corresponding to that topic. In contrast, the $\theta$ parameter of LDA allows each document to exhibit a mixture of topics.
+
+RNNs are much more powerful data likelihood functions, so the role of $\theta$ in \textsc{sentLDA} is not immediately necessary. We thus introduce a simpler model, \textsc{sentVAE}, to investigate whether a document-level latent variable is needed to obtain good modelling performance (or indeed coherent sentence topics). The generative story for \textsc{sentVAE} is very similar to that of \textsc{sentLDA} -- the only difference is that \textsc{sentVAE} omits the $\theta$ latent variable. The log-likelihood of the same document has the following form in \textsc{sentVAE} (where now $\alpha$ corresponds to a uniform categorical prior over the latent variables):
+
+\begin{dmath}
+P(\mathcal{D}|\alpha) = \prod_{i=1}^N \sum_{z_n} P(z_n | \alpha) P(s_i|z_n)
+\end{dmath}
+
+\subsection{Model Inference and Training}
+
+In LDA, the exact posterior $P(\mathbf{z}, \theta | \mathcal{D})$ is intractable to calculate exactly. The two main approximate inference methods have been variational expectation maximisation (EM) and collapsed Gibbs sampling. However, neither approach is suitable for our model:
+\begin{itemize}
+    \item Variational EM requires repeatedly calculating the data likelihood for each data point during the E-step, which is computationally expensive for RNN sequence scorers.
+    
+    \item The topic-sentence distribution is no longer a multinomial, and hence we no longer have a convenient Dirichlet-multinomial conjugacy to derive a Gibbs sample update.
+\end{itemize}
+
+We thus use neural variational inference \citep{Kingma:14,Mnih:14,Rezende:14} to solve our problem. Given a document $\mathcal{D}$ consisting of $N$ sentences $s_1, \dots, s_N$ is intractable to calculate, we make the mean field assumption that the posterior distribution over $(\theta, \mathbf{z})$ factorises into independent distributions $Q(\theta|\mathcal{D})$ and $Q(\mathbf{z} | \mathcal{D})$, and obtain an approximate posterior of the form:
+\begin{equation}
+Q(\mathbf{z}, \theta | \mathcal{D}) = Q(\theta|\mathcal{D})\prod_{i=1}^{N} Q(z_i|s_i)
+\end{equation}
+
+We assume that the approximate posterior over the document-topic distribution, $Q(\theta | \mathcal{D})$, is given by a diagonal logistic normal distribution. We calculate the parameters of $Q(\theta, \mathcal{D})$ as a function of the document (again, $\sigma \mathcal{N}$ refers to the logistic normal distribution): 
+\begin{equation}
+Q(\theta | \mathcal{D}) = \sigma \mathcal{N}(\mu(\mathcal{D}), \mathrm{diag}(\Sigma(\mathcal{D})))
+\label{eqn:theta_posterior}
+\end{equation}
+
+The posterior over the sentence-topic distribution $Q(\mathbf{z}| \mathcal{D})$ is by an independent product of the individual sentence topic distributions $Q(z_i | s_i)$ (we assume that the topic of each sentence depends only on that sentence). 
+
+Although the true data likelihood is intractable to optimize, we can obtain the following lower bound $\mathcal{L}$ (commonly refered to as the evidence lower bound or ELBO):
+\begin{multline}
+\label{eqn:sentlda_elbo}
+\log P(\mathcal{D}) \geq \mathcal{L} =  - [KL(Q(\theta|\mathcal{D}) || P(\theta | \alpha)) \\ + \mathbb{E}_{\theta \sim Q}(KL(Q(\mathbf{z} | \mathcal{D}, \theta) || P(\mathbf{z} | \theta)))] \\ + \mathbb{E}_{\mathbf{z} \sim Q} \log P(\mathcal{D} | \mathbf{z})
+\end{multline}
+
+This lower bound differs from the true log-likelihood by exactly the KL divergence between the variational approximation and the true posterior:
+\begin{equation}
+\log P(\mathcal{D}) - \mathcal{L} = KL(Q(z, \theta | \mathcal{D}) || P(z, \theta | \mathcal{D}))
+\label{eqn:ELBO_gap}
+\end{equation}
+
+To train our model, we optimize the lower bound in Equation \ref{eqn:sentlda_elbo}. We use the inference network to calculate the parameters of the posterior approximation $Q(z, \theta| \mathcal{D})$. Then, we use samples of $z$ from $Q$ to estimate the log-likelihood of the document. Finally, we calculate the ELBO (given above), and then take an update step to maximise this quantity.
+
+Gradients of the ELBO with respect to the generative model are easy to calculate. However, gradients of the ELBO with respect to the inference model require taking the derivative of an expectation of samples from the discrete distribution $Q(\mathbf{z}|\mathcal{D})$. One potential solution is to use the score function estimator, otherwise known as REINFORCE \citep{Williams:92}. However, this estimator has high variance, although variance reduction techniques can be employed \citep{Greensmith:04,Mnih:14}
+
+We instead use the Gumbel-softmax estimator, as proposed independently in \citet{Maddison:17} and \citet{Jang:17}. This makes use of the following fact: if $a_i$ are the logits corresponding to a discrete distribution, and $\epsilon_i$ are i.i.d. Gumbel variables, then $\argmax_i (a_i + \epsilon_i)$ simulates samples from that distribution. By replacing the argmax with a softmax, and scaling the individual terms by a temperature parameter $\tau$, we have a continuous approximation to the discrete sample, which in the zero temperature limit approaches a discrete sample. In particular, this gives us a reparametrisation trick for a multinomial distribution, and lets us backpropagate gradients to the inference network.
+
+Inference for \textsc{sentVAE} is exactly the same, except we do not need to calculate $Q(\theta|\mathcal{D})$. The ELBO for \textsc{sentVAE} is given by:
+
+\begin{multline}
+\log P(\mathcal{D} | \alpha) \geq -KL(Q(\mathbf{z}|s) || P(\mathbf{z}|\alpha)) + \\ \mathbb{E}_{\mathbf{z} ~ Q} \log P(\mathcal{D} | \mathbf{z})
+\end{multline}
+
+\subsection{Model Implementation}
+
+\begin{figure*}
+    \centering
+    \includegraphics[width=\textwidth]{model_architecture}
+    \caption{The model architecture of \textsc{sentLDA}. The document consists of two sentences: \textit{I do not like} and \textit{green eggs and ham}. Arrows represent the flow of information, and dashed arrows indicate sampling. Stochastic variables are represented as circles, and deterministic variables are represented in rounded rectangles. The red dashed line indicates that the KL between the two variables is minimised during training. The architecture of \textsc{sentVAE} is very similar, except there is no document level RNN and no document-level $\theta$.}
+    \label{fig:model_architecture}
+\end{figure*}
+
+We calculate $Q(\mathbf{z}|\mathcal{D})$ and $Q(\theta | \mathcal{D})$ in both models above using neural networks (see Figure \ref{fig:model_architecture} for an illustration of \textsc{sentLDA}).
+
+Given a document $\mathcal{D}$ of $N$ sentences $s_1, \dots, s_N$, we first run a bidirectional LSTM over each $s_i$, concatenate the final states of the LSTM in each direction and pass them through a single feedforward layer to obtain our representation of each sentence, $h_i$. We form a document representation by further running a second bidirectional LSTM over the $h_i$'s, concatenating the final states of each and passing them through a second feedforward layer to obtain $d$, our representation of the entire document (cf. the hierarchical document models of \citet{Yang:16}, \citet{Li:2015} and \citet{Lin:15}). We next predict the posterior mean and variance of the document-topic distribution as:
+\begin{equation}
+\begin{split}
+Q(\theta | \mathcal{D}) &= \sigma \mathcal{N}(\mu_{pos}, \Sigma_{pos}) \\
+\mu_{pos} &= W_{\mu}d + b_{\mu} \\
+\log(\Sigma_{pos}) &= diag(W_{\Sigma}d + b_{\Sigma})
+\end{split}
+\end{equation}
+
+To calculate $Q(z|s)$, we pass $h_i$, the representation of the sentence $s_i$ through an affine transformation and then apply a softmax to obtain the logits corresponding to $Q(z|s)$:
+
+\begin{equation}
+Q(z | \theta) = \sigma(W_z h_i + b_z)
+\end{equation}
+
+We estimate all expectations in the ELBO using Monte Carlo sampling. For the expectation of the KL between the posterior sentence-topic distribution and the prior, we use samples of $\theta$ from the posterior document-topic distribution and calculate the KL analytically. As the KL between two categorical distributions has an easy to compute closed form, and sampling from a normal is easy, we can take many samples of $\theta$ to obtain a good estimate (in the experiments below, we use 10000).
+
+Unfortunately, the Gumbel-softmax estimator does not give true one-hot samples. While we could marginalise out the non-zero values in the sample by computing the data likelihood under each topic, weighted by the probability of that topic in the Gumbel-softmax sample, this is computationally inefficient. We originally tried the straight-through Gumbel estimator proposed in \citet{Jang:17}, but found this gave poor results. We found that the samples were sufficiently peaked to just combine the topic embeddings directly, weighted by the value of that topic under the Gumbel-softmax sample, and pass this as the initial hidden state of the LSTM. As observed by \citet{Maddison:17}, a fixed Gumbel-softmax sampling temperature of 1 worked well, due to the large dimensionality of the latent variables.
+
+We also encountered the problems reported in \citet{Bowman:16}, whereby our model would not make use of the latent variables, as LSTMs are powerful sequence models. We overcome these difficulties through the techniques suggested in that paper, by  annealing the weight of the KL term in the ELBO from 0.05 (initialising the KL weight to 0 led to divergence during training) to 1 over the course of model training and by dropping out input words with probability $0.8$.
+
+Another issue for latent variable models trained through neural variational inference is mode collapse. This is when latent variables are stuck in a local minimum during training, and do not learn to encode useful information. As reported in \citet{Sonderby:16} and \citet{Strivastava:17}, batch normalisation (BN) \citep{Ioffe:15} helps alleviate this issue, and indeed every topic was used to label some sentence in the development set after training with BN (if BN was not used, only one topic was consistently used to label sentences).
+
+\section{Experiments}
+
+We evaluate the above models on two tasks. The first is document modelling, which is a measure of how well generative models of text can predict unseen documents. For this, we are given a document, and have to infer the likelihood of that document. The second is using the document-level features that each model infers to perform document classification. Finally, we qualitatively inspect the topics that the models learn, to investigate whether the model has learnt coherent clusters of sentences.
+
+\subsection{Document Modelling}
+
+\begin{table}[t]
+    \centering
+    \begin{tabular}{c|cc}
+        \toprule
+        Model & Dev Perplexity & Test Perplexity \\
+        \midrule
+        \textsc{sentVAE} & \textbf{105} & \textbf{92} \\
+        \textsc{sentLDA} & 108 & 95 \\
+        LSTM LM & 124 & 116 \\
+        LDA & 782 & 571 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Perplexity on held-out documents}
+    \label{tab:perplexity}
+\end{table}
+
+Here, we test how well \textsc{sentLDA} can fit to the data and evaluate the likelihood of unseen documents. We use data from 100 randomly selected days of the RCV1 dataset to train our model, which corresponds to 211k documents and 52 million words. To evaluate our model, we used data from a disjoint randomly-selected set of 36 days, corresponding to 92k documents and 22 million words. We also used files from a disjoint set of 5 days as validation data, corresponding to 9k documents and 2 million words. We lowercased all words in the dataset, replaced all numbers with 0's and collapsed any string of more than one 0 to a single 0. We filtered out any words that appeared fewer than 20 times in the training set as our vocabulary, which left 41341 words. We also truncated all documents to 20 sentences, and each sentence to 40 words.
+
+As baselines, we compare our \textsc{sentLDA} model to standard LDA\footnote{We used the Gensim implementation \citep{gensim}}, and a self-implemented single-layer LSTM language model. As much as possible, we kept the same hyperparameters across all our models (see the appendix for full hyperparameter details). All the latent variable models used 50 latent topics. For \textsc{sentVAE} and \textsc{sentLDA}, we use 1 sample from the posterior to estimate the data log-likelihood during training time, and use 10 samples during test time. For \textsc{sentLDA}, we used a standard logistic normal prior ($\mu = 0$, $\Sigma=I_d$). We trained all of our models for 5 epochs, and picked the model with the lowest validation set perplexity to evaluate on the test set. The results are shown in Table \ref{tab:perplexity}.
+
+Both sentence-level models do considerably better on perplexity than LDA on unseen documents, showing the utility of using a more powerful data likelihood function. \textsc{sentLDA} and \textsc{sentVAE} also do better than the LSTM language model, as these models can perform inference to work out global topics before predicting individual words.
+
+The discrepancy between \textsc{sentVAE} and \textsc{sentLDA} can be explained by the fact that the ELBO for \textsc{sentVAE} is tight. Recall Equation \ref{eqn:ELBO_gap} -- the bound on the log-likelihood given by variational inference differs from the true log-likelihood by the KL divergence between the approximate posterior and the true posterior.For \textsc{sentVAE}, the true posterior $P(z | s)$ is also categorical, as any distribution over a finite set of categorical. Hence, it is possible for the approximate posterior $Q(z | s)$ to learn to match the true posterior, and so the ELBO can reach the true log-likelihood. For \textsc{sentLDA}, the approximate posterior is just that, and so there is always a gap between the ELBO and the true log-likelihood.
+
+\subsection{Document Classification}
+
+\begin{table}[t]
+    \centering
+    \resizebox{\columnwidth}{!}{
+    \begin{tabular}{c|cc|cc}
+        \toprule
+        Model & Dev Accuracy & Dev F1 & Test Accuracy & Test F1 \\
+        \midrule
+        \textsc{sentVAE} & 0.9787 & 0.5676 & 0.9724 & 0.3886 \\
+        \textsc{sentLDA} & 0.9780 & 0.5553 & 0.9777 & 0.5563 \\
+        LDA & \textbf{0.9812} & \textbf{0.6578} & \textbf{0.9809} & \textbf{0.6596} \\
+        \bottomrule
+    \end{tabular}
+    }
+    \caption{Binary classification accuracy and (microaveraged) F1 on dev and test sets}
+    \label{tab:classification}
+\end{table}
+
+We next experimented with document classification using the document representations learnt by our models. For each model type, we used the model with the lowest perplexity from the document modelling task to extract document representations (to be described later). We then used these representations to perform document tagging, using the topic tags in the RCV1 corpus. 
+
+The documents in RCV1 are all tagged with topic tags, indicating the semantic domain of the document \citep{Lewis:04}. Each document can have multiple tags (usually up to 4), and there are 103 in total, making this a sparse multiclass classification problem. We thus train 103 independent logistic classifiers, one for each tag, each taking as input the document representations. We use the same documents for training, validation and testing as above, and do not do any fine-tuning of our models (i.e. the only parameters we train are those of the classifier). We train each classification model for 5 epochs, and evaluate the model with the best F1 score on the development set.
+
+For LDA, we used $\gamma$, the parameter of the inferred posterior Dirichlet distribution over the $\theta$ latent variable, as the document representation. This has a natural interpretation: $\gamma$ is obtained by incrementing each value of the parameter of the Dirichlet prior $\alpha$ by the number of times that topic appears in the document. 
+
+For \textsc{sentLDA}, $Q(\theta | \mathcal{D})$ is controlled by two parameters $\mu$ and $\Sigma$. We combine the two parameters by estimating the mean of the distribution $\hat{\theta} = \mathbb{E}_{\theta \sim Q} \theta$, and use the log of this as the document representation.
+
+\textsc{sentVAE} does not infer a simple document-level statistic, but instead infers independent sentence-level ones $Q(z_i | s_i)$. To aggregate these into a document level representation, we take the average of these distributions, and then take the log of the resulting distribution. This has the natural interpretation that to draw a topic for $\mathcal{D}$, we first draw a sentence randomly from $\mathcal{D}$, and then draw a topic from the sentence-topic posterior.
+
+As can be seen, there is still a large gap in document classification performance between \textsc{sentLDA}, \textsc{sentVAE}, and LDA, with traditional LDA outperforming its sentence-level counterparts. \textsc{sentLDA} also seems to be more stable across unseen data than \textsc{sentVAE}, which exhibits a dramatic drop in F1 score on the test set.
+
+The superiority of LDA could be due to the nature of the classification task: the RCV1 topics tagset are very topically focussed (as the name suggests), and it is often enough to identify one or two keywords to tag a document. Indeed, \citet{Lewis:04} report microaveraged F1 scores of 0.8 using an SVM with word-level features, using a different training/test split and different data preprocessing (they perform hierarchical expansion of document tags, which makes the task easier by reducing sparsity). The LDA $\gamma$ parameter is precisely a summary of the words which appear in a document, which suggests why it does so well at this task. In contrast, the topic information learnt by \textsc{sentVAE} and \textsc{sentLDA} is more on the sentence-level, and hence it is harder to spot these keywords from the document representations inferred by these models.
+
+\subsection{Topic Coherence}
+
+\begin{table*}[t]
+\centering{
+\begin{tabular}{c c p{30em}}
+\toprule
+    \multirow{9}{*}{\textsc{sentLDA}}
+        & \multirow{3}{*}{Topic 39} 
+            & \tabitem \resizebox{29em}{0.5em}{diplomats said the talks had been good to the talks with the united states , the united states are trying} \\
+        &   & \tabitem \resizebox{29em}{0.5em}{he said the government of the peace talks in the united states ' visit to the united states and the} \\
+        &   & \tabitem \resizebox{29em}{0.5em}{he said he was a meeting for the talks with an official with the country 's government to the united} \\
+    \cmidrule(lr){2-3}
+        & \multirow{3}{*}{Topic 2} 
+            & \tabitem \resizebox{29em}{0.4em}{traders said the results were expected to be released by the following were a few percent from the current crop} \\
+        &   & \tabitem \resizebox{29em}{0.5em}{it said the market is expected to be around the end of the week 's main states and the market} \\
+        &   & \tabitem \resizebox{29em}{0.5em}{traders said the market , the current food prices have been a 0 percent in 0 and the u.s. import} \\
+    \cmidrule(lr){2-3}
+        & \multirow{3}{*}{Topic 47} 
+            & \tabitem usa : u.s. police end on friday \\
+        &   & \tabitem south korea : s.africa 's largest producer to 0 pct \\
+        &   & \tabitem usa : u.s. dollar end lower on friday \\
+\midrule
+    \multirow{9}{*}{\textsc{sentVAE}}
+        & \multirow{3}{*}{Topic 27} 
+            & \tabitem france : india 's favourite pension funds to 0 pct \\ 
+        &   & \tabitem france : press digest - march 0 - feb \\
+        &   & \tabitem usa : texas , california , '' on thursday \\
+    \cmidrule(lr){2-3}
+        & \multirow{3}{*}{Topic 15} 
+            & \tabitem \resizebox{29em}{0.5em}{north korea is the biggest of the collapse of the country 's efforts to have to reduce the peace process } \\
+        &   & \tabitem \resizebox{29em}{0.5em}{european union 's efforts to join the united states for the united states , which is a new york to} \\
+        &   & \tabitem \resizebox{29em}{0.4em}{european arab countries have been held in the wake of the united states in a dispute with israeli government and} \\
+    \cmidrule(lr){2-3}
+        & \multirow{3}{*}{Topic 31} 
+            & \tabitem \resizebox{29em}{0.6em}{czech republic : czech bond ended march 0 0 to 0 on friday after a march 0 march 0 0} \\
+        &   & \tabitem \resizebox{29em}{0.5em}{czech republic : 0 percent of the previous week ended march 0 0 to a year earlier in the first } \\
+        &   & \tabitem \resizebox{29em}{0.5em}{czech republic : czech republic : 0 points in a tonne on friday , the previous session of the previous} \\
+\bottomrule
+\end{tabular}
+
+}
+\caption{Sampled sentences (truncated to 20 words) from the 3 most common topics of each model}
+\label{tab:samples}
+\vspace{-1em}
+\end{table*}
+
+Finally, we inspect the content of the latent variables $z$. We select three most common topics used to label sentences in our dev set, and generated 3 sentences from each topic by initialising the hidden state of the decoder with the topic embedding corresponding to that topic and then sampling from the decoder. To ensure that our generated sentences are grammatical, we divide the logits output by the decoder by a temperature parameter $\tau$, which serves to sharpen the per-word probability distribution. We found that $\tau=0.5$ gave reasonably varied but coherent output. Table \ref{tab:samples} shows the samples. For more samples from other topics, please see the appendix.
+
+The topics seem to be coherent clusters of sentences, with sentences sampled from each topic having similar syntactic and semantic properties. Qualitatively, the topics learnt appear to be different for each model, with \textsc{sentVAE} learning topics which seem to have a loose semantic topic, while \textsc{sentLDA} learns more focussed syntactically and semantically coherent topics. In addition, output from \textsc{sentLDA} seems more grammatical in general. It seems that adding a document-level latent variable $\theta$ does qualitatively change the behaviour of the resulting model, and forces the topics to be more tightly clustered.
+
+We found that passing in one-hot topics resulted in incoherent output, and that we needed to take Gumbel-softmax samples of the one-hot topic vectors before our decoder generated coherent text. We suspect this is due to the non-one-hotness of the Gumbel-softmax samples used during, which must be replicated during test time for grammatical output. An interesting extension would be to see whether exact sampling from $Q(z|s)$ during training time would result in more grammatical output and more coherent topics during test time.
+
+We also experimented with autoencoding sentences from the development set using both models - we performed inference on the sentences of the first document in the development set, and then sampled from the resulting sentence-topic posteriors. The resulting autoencoded sentences are similar in syntax and general semantic content, although differ slightly in their exact meanings. Full results are shown in the appendix.
+
+\section{Conclusion}
+
+We present two sentence-level generative models of documents. One is a categorical sentence autoencoder, while the other is a direct generalisation of LDA with a sentence-level likelihood function. We show that both models outperform LDA and traditional language models at the task of document modelling, and that both models learn coherent sentence-level topics. We also show that the document-level representations can be used to perform document classification, but are outperformed at a shallow document classification task by traditional LDA.
